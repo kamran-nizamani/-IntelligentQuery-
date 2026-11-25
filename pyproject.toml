@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "intelligent-query-analyzer"
+version = "1.0.0"
+description = "Intelligent Query Analyzer and Search System"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "pymupdf>=1.24",
+    "python-docx>=1.1",
+    "tree-sitter>=0.25,<0.26",
+    "tree-sitter-java>=0.23",
+    "tree-sitter-javascript>=0.23",
+    "faiss-cpu>=1.12",
+    "sentence-transformers>=5.0",
+]
+
+[project.scripts]
+semantic-search = "semantic_search.cli:main"
