@@ -172,7 +172,14 @@ create policy "iqa_documents_delete_own" on public.documents for delete to authe
 drop policy if exists "iqa_chunks_select_own" on public.document_chunks;
 drop policy if exists "iqa_chunks_insert_own" on public.document_chunks;
 drop policy if exists "iqa_chunks_delete_own" on public.document_chunks;
-create policy "iqa_chunks_select_own" on public.document_chunks for select to authenticated using ((select auth.uid()) = user_id);
+create policy "iqa_chunks_select_own" on public.document_chunks for select to authenticated
+using (
+  (select auth.uid()) = user_id
+  and exists (
+    select 1 from public.documents d
+    where d.id = document_id and d.user_id = (select auth.uid())
+  )
+);
 create policy "iqa_chunks_insert_own" on public.document_chunks for insert to authenticated
 with check (
   (select auth.uid()) = user_id
@@ -181,7 +188,14 @@ with check (
     where d.id = document_id and d.user_id = (select auth.uid())
   )
 );
-create policy "iqa_chunks_delete_own" on public.document_chunks for delete to authenticated using ((select auth.uid()) = user_id);
+create policy "iqa_chunks_delete_own" on public.document_chunks for delete to authenticated
+using (
+  (select auth.uid()) = user_id
+  and exists (
+    select 1 from public.documents d
+    where d.id = document_id and d.user_id = (select auth.uid())
+  )
+);
 
 drop policy if exists "iqa_history_select_own" on public.search_history;
 drop policy if exists "iqa_history_insert_own" on public.search_history;
@@ -190,33 +204,23 @@ create policy "iqa_history_select_own" on public.search_history for select to au
 create policy "iqa_history_insert_own" on public.search_history for insert to authenticated with check ((select auth.uid()) = user_id);
 create policy "iqa_history_delete_own" on public.search_history for delete to authenticated using ((select auth.uid()) = user_id);
 
--- Enforce bucket privacy, 50 MB size limit, and safe MIME allowlist (excluding HTML/SVG)
+-- Keep the bucket private with a 50 MB object limit.
+-- Storage accepts any MIME type; application parsers must still validate supported formats.
 insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
 values (
   'documents',
   'documents',
   false,
   52428800,
-  array[
-    'application/pdf',
-    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-    'text/plain',
-    'text/markdown',
-    'text/x-python',
-    'text/javascript',
-    'application/javascript',
-    'text/typescript',
-    'text/x-java-source',
-    'text/x-c',
-    'text/x-c++src',
-    'application/json',
-    'application/octet-stream'
-  ]
+  null
 )
 on conflict (id) do update set
   public = false,
-  file_size_limit = excluded.file_size_limit,
-  allowed_mime_types = excluded.allowed_mime_types;
+  file_size_limit = 52428800,
+  allowed_mime_types = null;
+
+-- Remove the manually-created broad policy. The user-folder policies below replace it.
+drop policy if exists "Authenticated users can upload documents" on storage.objects;
 
 drop policy if exists "iqa_storage_select_own" on storage.objects;
 drop policy if exists "iqa_storage_insert_own" on storage.objects;
@@ -283,8 +287,8 @@ candidate_ids as (
 ),
 fused as (
   select ids.id, l.rank as lexical_rank, v.rank as vector_rank,
-    coalesce(1.0 / (greatest(1, coalesce(rrf_k, 60)) + l.rank), 0.0)
-      + coalesce(1.0 / (greatest(1, coalesce(rrf_k, 60)) + v.rank), 0.0) as rrf_score
+    coalesce(1.0 / (greatest(1, least(coalesce(rrf_k, 60), 1000)) + l.rank), 0.0)
+      + coalesce(1.0 / (greatest(1, least(coalesce(rrf_k, 60), 1000)) + v.rank), 0.0) as rrf_score
   from candidate_ids ids
   left join lexical_candidates l on l.id = ids.id
   left join vector_candidates v on v.id = ids.id

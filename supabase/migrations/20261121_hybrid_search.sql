@@ -94,33 +94,20 @@ ALTER TABLE public.documents ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.document_chunks ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.search_history ENABLE ROW LEVEL SECURITY;
 
--- Storage bucket 'documents' with size and MIME restrictions
+-- Private Storage bucket: accept any MIME type; application parsers still validate supported formats.
+-- Keep the server-side 50 MB object limit.
 INSERT INTO storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
 VALUES (
     'documents',
     'documents',
     false,
     52428800,
-    ARRAY[
-        'application/pdf',
-        'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-        'text/plain',
-        'text/markdown',
-        'text/x-python',
-        'text/javascript',
-        'application/javascript',
-        'text/typescript',
-        'text/x-java-source',
-        'text/x-c',
-        'text/x-c++src',
-        'application/json',
-        'application/octet-stream'
-    ]
+    NULL
 )
 ON CONFLICT (id) DO UPDATE SET
     public = false,
-    file_size_limit = EXCLUDED.file_size_limit,
-    allowed_mime_types = EXCLUDED.allowed_mime_types;
+    file_size_limit = 52428800,
+    allowed_mime_types = NULL;
 
 -- 6. Atomic Hybrid Search with Reciprocal Rank Fusion (RRF k=60)
 CREATE OR REPLACE FUNCTION public.hybrid_search_rrf(
