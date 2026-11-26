@@ -71,6 +71,45 @@ describe("ApiClient", () => {
     expect(trace.ast.language).toBe("python");
     expect(fetchMock).not.toHaveBeenCalled();
   });
+
+  it("prioritizes explicit query limit N over options.limit and passes min_similarity", async () => {
+    const rpcMock = vi.fn().mockResolvedValue({ data: [], error: null });
+    const insertMock = vi.fn().mockResolvedValue({ error: null });
+    const fakeSupabase = {
+      auth: {
+        getSession: vi.fn().mockResolvedValue({ data: { session: { user: { id: "user-1" } } } }),
+      },
+      rpc: rpcMock,
+      from: vi.fn().mockReturnValue({ insert: insertMock }),
+    };
+
+    const clientMod = await import("@/lib/supabase/client");
+    vi.spyOn(clientMod, "isSupabaseConfigured").mockReturnValue(true);
+    vi.spyOn(clientMod, "getSupabaseClient").mockReturnValue(fakeSupabase as never);
+
+    await new ApiClient().search("find notes about testing limit 3", { mode: "lexical", limit: 10 });
+    expect(rpcMock).toHaveBeenCalledWith(
+      "hybrid_search_rrf",
+      expect.objectContaining({
+        match_limit: 3,
+        min_similarity: 0.35,
+        search_mode: "lexical",
+      })
+    );
+
+    rpcMock.mockClear();
+    await new ApiClient().search("kamran", { mode: "lexical", limit: 10 });
+    expect(rpcMock).toHaveBeenCalledWith(
+      "hybrid_search_rrf",
+      expect.objectContaining({
+        match_limit: 10,
+        min_similarity: 0.35,
+        search_mode: "lexical",
+      })
+    );
+
+    vi.restoreAllMocks();
+  });
 });
 
 describe("browser-based TypeScript compiler", () => {

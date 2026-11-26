@@ -16,6 +16,7 @@ import { sanitizeFileName, validateUploads } from "./upload-validation";
 let anonymousSignInPromise: Promise<User> | null = null;
 
 const CHUNK_INSERT_BATCH_SIZE = 50;
+const DEFAULT_MIN_SIMILARITY = 0.35;
 
 export type HealthResponse = {
   status: string;
@@ -178,7 +179,10 @@ export class ApiClient {
         : (plan.filters.content_kind as string) || null;
     const rpcLang = (plan.filters.language as string) || null;
     const rpcSymbol = (plan.filters.symbol_kind as string) || null;
-    const requestedLimit = options.limit || plan.limit || 10;
+    const hasExplicitLimit = trace.tokens.some(
+      (token, index) => token.kind === "LIMIT" && trace.tokens[index + 1]?.kind === "NUMBER"
+    );
+    const requestedLimit = hasExplicitLimit ? plan.limit : (options.limit ?? 10);
 
     const { data: initialData, error } = await supabase.rpc("hybrid_search_rrf", {
       query_text: plan.lexicalQuery || query,
@@ -189,6 +193,7 @@ export class ApiClient {
       filter_symbol: rpcSymbol,
       rrf_k: 60,
       search_mode: options.mode || "hybrid",
+      min_similarity: DEFAULT_MIN_SIMILARITY,
     });
     let data = initialData;
 
@@ -203,6 +208,7 @@ export class ApiClient {
         filter_symbol: null,
         rrf_k: 60,
         search_mode: options.mode || "hybrid",
+        min_similarity: DEFAULT_MIN_SIMILARITY,
       });
       if (!fallbackRes.error && fallbackRes.data && (fallbackRes.data as unknown[]).length > 0) {
         data = fallbackRes.data;

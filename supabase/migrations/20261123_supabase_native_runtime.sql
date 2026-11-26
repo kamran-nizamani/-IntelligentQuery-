@@ -1,6 +1,7 @@
 -- Align the existing prototype schema with the Supabase-native browser client.
--- Fixes DB-01 ($$ quoting), DB-02 (vector schema compatibility), DB-03 (drop legacy 7-param overload),
+-- Fixes DB-01 ($$ quoting), DB-02 (vector schema compatibility), DB-03 (drop legacy overloads),
 -- DB-04 (use indexed c.fts & sargable filters), DB-05 (rrf_k / match_limit guards),
+-- dynamic relevance-filtered hybrid search (min_similarity + general limit 50),
 -- plus security hardening (parent-doc RLS, bucket limits, RPC grants) and analytics aggregation RPC.
 
 create schema if not exists extensions;
@@ -232,18 +233,21 @@ with check (bucket_id = 'documents' and (select auth.uid())::text = (storage.fol
 create policy "iqa_storage_delete_own" on storage.objects for delete to authenticated
 using (bucket_id = 'documents' and (select auth.uid())::text = (storage.foldername(name))[1]);
 
--- Drop legacy 7-parameter overload to prevent PostgREST RPC ambiguity (DB-03)
+-- Drop all previous overloads to prevent PostgREST RPC ambiguity (DB-03)
 drop function if exists public.hybrid_search_rrf(text, vector, integer, text, text, text, integer);
+drop function if exists public.hybrid_search_rrf(text, vector, integer, text, text, text, integer, text);
+drop function if exists public.hybrid_search_rrf(text, vector, integer, text, text, text, integer, text, double precision);
 
 create or replace function public.hybrid_search_rrf(
   query_text text,
   query_embedding vector(384),
-  match_limit integer default 10,
+  match_limit integer default 50,
   filter_kind text default null,
   filter_language text default null,
   filter_symbol text default null,
   rrf_k integer default 60,
-  search_mode text default 'hybrid'
+  search_mode text default 'hybrid',
+  min_similarity double precision default 0.40
 )
 returns table (
   chunk_id text, document_id text, file_name text, storage_path text, file_type text,
@@ -266,17 +270,20 @@ with lexical_candidates as (
     and (filter_language is null or c.language = lower(filter_language))
     and (filter_symbol is null or c.symbol_kind = lower(filter_symbol))
   order by ts_rank_cd(c.fts, websearch_to_tsquery('english', query_text)) desc
-  limit 60
+  limit 100
 ),
 vector_candidates as (
   select c.id, row_number() over (order by c.embedding <=> query_embedding) as rank
   from public.document_chunks c
-  where search_mode <> 'lexical' and query_embedding is not null and c.embedding is not null
+  where search_mode <> 'lexical'
+    and query_embedding is not null
+    and c.embedding is not null
+    and (1 - (c.embedding <=> query_embedding)) >= coalesce(min_similarity, 0.40)
     and (filter_kind is null or c.source_kind = filter_kind)
     and (filter_language is null or c.language = lower(filter_language))
     and (filter_symbol is null or c.symbol_kind = lower(filter_symbol))
   order by c.embedding <=> query_embedding
-  limit 60
+  limit 100
 ),
 candidate_ids as (
   select id from lexical_candidates union select id from vector_candidates
@@ -296,11 +303,11 @@ from fused f
 join public.document_chunks c on c.id = f.id
 join public.documents d on d.id = c.document_id
 order by f.rrf_score desc
-limit greatest(1, least(coalesce(match_limit, 10), 100));
+limit greatest(1, least(coalesce(match_limit, 50), 100));
 $function$;
 
-revoke all on function public.hybrid_search_rrf(text, vector, integer, text, text, text, integer, text) from public, anon;
-grant execute on function public.hybrid_search_rrf(text, vector, integer, text, text, text, integer, text) to authenticated;
+revoke all on function public.hybrid_search_rrf(text, vector, integer, text, text, text, integer, text, double precision) from public, anon;
+grant execute on function public.hybrid_search_rrf(text, vector, integer, text, text, text, integer, text, double precision) to authenticated;
 
 -- Server-side workspace analytics aggregation RPC (avoids unbounded client-side table downloads)
 create or replace function public.get_workspace_analytics()
