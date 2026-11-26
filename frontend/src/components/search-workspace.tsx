@@ -1,6 +1,8 @@
 "use client";
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
+import dynamic from "next/dynamic";
+import { AnimatePresence, motion } from "framer-motion";
 import type {
   AppSettings,
   CompilerTrace,
@@ -9,6 +11,11 @@ import type {
   SearchMode,
   SearchResult,
 } from "@/types/search";
+
+const GlobalBackdrop3D = dynamic(
+  () => import("./3d/global-backdrop-3d").then((m) => m.GlobalBackdrop3D),
+  { ssr: false }
+);
 import { initialQuery } from "@/data/example-queries";
 import {
   apiClient,
@@ -336,6 +343,7 @@ export function SearchWorkspace() {
 
   return (
     <div className={`app-container ${settings.compactMode ? "compact" : ""}`}>
+      <GlobalBackdrop3D currentView={currentView} enabled={true} />
       <a href="#main-content" className="skip-link">
         Skip to main content
       </a>
@@ -366,8 +374,16 @@ export function SearchWorkspace() {
           onRetryConnection={handleRetryConnection}
         />
 
-        <main id="main-content" tabIndex={-1} style={{ flex: 1 }}>
+        <main id="main-content" tabIndex={-1} style={{ flex: 1, position: "relative", zIndex: 1 }}>
           {backendStatus === "offline" && <BackendBanner onRetry={handleRetryConnection} />}
+          <AnimatePresence mode="wait">
+            <motion.div
+              key={currentView}
+              initial={{ opacity: 0, y: 6 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -4 }}
+              transition={{ duration: 0.16, ease: "easeOut" }}
+            >
 
           {currentView === "overview" && (
             <OverviewView
@@ -432,6 +448,8 @@ export function SearchWorkspace() {
               onResetSettings={handleResetSettings}
             />
           )}
+            </motion.div>
+          </AnimatePresence>
         </main>
       </div>
 

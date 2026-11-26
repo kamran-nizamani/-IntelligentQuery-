@@ -4,7 +4,12 @@ A compiler-assisted document and source-code search workspace. The production we
 
 ## Features
 
-- Seven-stage TypeScript query compiler: lexer, parser, AST, semantic checks, IR, optimization, and retrieval planning.
+- **Formal Query Language & Compiler ([GRAMMAR.md](./GRAMMAR.md), [COMPILER_DESIGN.md](./COMPILER_DESIGN.md)):**
+  - DFA-based lexical analyzer with line/column spans, escape decoding, and visual DFA transition explorer.
+  - Hybrid Recursive-Descent + Pratt operator-precedence parser (`AND`, `OR`, `NOT`, parentheses, field filters, comparisons, error recovery).
+  - Semantic analyzer with shared symbol table, Damerau-Levenshtein typo suggestions, contradiction detection, and Rust-style diagnostics.
+  - Typed IR operator DAG, `O0`/`O1`/`O2` cost-based optimizer (constant folding, double-negation, De Morgan, CSE, predicate ordering), and stack-oriented Query Execution VM.
+- **Interactive 3D Compiler Studio:** Lazy-loaded Three.js + React Three Fiber v9 pipeline visualization driven by real compiler traces with playback, timeline scrubbing, and 2D fallback.
 - Browser-side extraction and chunking for PDF, DOCX, TXT, Python, Java, JavaScript, and related source files.
 - Browser-side 384-dimensional MiniLM embeddings using Transformers.js.
 - PostgreSQL full-text search and pgvector semantic retrieval, combined with Reciprocal Rank Fusion (RRF).

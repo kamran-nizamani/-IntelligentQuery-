@@ -1,0 +1,76 @@
+[
+  {
+    "id": "GQ-01",
+    "category": "natural_language",
+    "query": "Find Python functions that process CSV files",
+    "expectedValid": true,
+    "expectedLanguage": "python",
+    "expectedTarget": "function",
+    "expectedLimit": 10
+  },
+  {
+    "id": "GQ-02",
+    "category": "boolean_nested",
+    "query": "find python functions AND (java OR javascript) NOT framework = \"django\" limit 15",
+    "expectedValid": true,
+    "expectedLimit": 15
+  },
+  {
+    "id": "GQ-03",
+    "category": "field_filters",
+    "query": "language:python AND score >= 0.75 AND \"data processing\"",
+    "expectedValid": true,
+    "expectedLanguage": "python",
+    "expectedLimit": 10
+  },
+  {
+    "id": "GQ-04",
+    "category": "natural_conjunction",
+    "query": "Search documents about hybrid search and RRF",
+    "expectedValid": true,
+    "expectedTarget": "document",
+    "expectedLimit": 10
+  },
+  {
+    "id": "GQ-05",
+    "category": "typo_diagnostic",
+    "query": "langauge = \"python\"",
+    "expectedValid": false,
+    "expectedDiagnosticCodes": ["SEM001"]
+  },
+  {
+    "id": "GQ-06",
+    "category": "contradiction",
+    "query": "language = \"python\" AND language = \"java\"",
+    "expectedValid": false,
+    "expectedDiagnosticCodes": ["SEM006"]
+  },
+  {
+    "id": "GQ-07",
+    "category": "or_alternative",
+    "query": "language = \"python\" OR language = \"java\"",
+    "expectedValid": true
+  },
+  {
+    "id": "GQ-08",
+    "category": "syntax_error_recovery",
+    "query": "find (python OR java",
+    "expectedValid": true,
+    "expectedSyntaxCodes": ["SYN008"]
+  },
+  {
+    "id": "GQ-09",
+    "category": "type_mismatch",
+    "query": "score >= \"high\" AND active = \"yes\"",
+    "expectedValid": false,
+    "expectedDiagnosticCodes": ["SEM003"]
+  },
+  {
+    "id": "GQ-10",
+    "category": "limit_override",
+    "query": "find notes about testing limit 3",
+    "expectedValid": true,
+    "expectedTarget": "document",
+    "expectedLimit": 3
+  }
+]

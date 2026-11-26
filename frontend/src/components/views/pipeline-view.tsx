@@ -1,9 +1,11 @@
 "use client";
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
+import dynamic from "next/dynamic";
 import {
   AlertTriangle,
   ArrowRight,
+  Box,
   CheckCircle2,
   ChevronRight,
   Clock,
@@ -14,6 +16,11 @@ import type { CompilerTrace } from "@/types/search";
 import { apiClient } from "@/lib/api-client";
 import { TraceSourceNotice, type TraceSource } from "../ui/trace-source-notice";
 import { sampleQueries } from "@/data/example-queries";
+
+const Compiler3DScene = dynamic(
+  () => import("../pipeline/compiler-3d-scene").then((m) => m.Compiler3DScene),
+  { ssr: false }
+);
 
 interface PipelineViewProps {
   initialQuery?: string;
@@ -31,6 +38,7 @@ export function PipelineView({
   const requestSeq = useRef(0);
   const [selectedStageIndex, setSelectedStageIndex] = useState(0);
   const [loading, setLoading] = useState(false);
+  const [viewMode, setViewMode] = useState<"2d" | "3d">("3d");
 
   const handleRunPipeline = useCallback(async (q: string) => {
     const text = q.trim();
@@ -72,16 +80,28 @@ export function PipelineView({
             <h1 className="page-title">Compiler Pipeline Visualization</h1>
           </div>
 
-          {onNavigateToSearch && (
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <button
-              onClick={() => onNavigateToSearch(query)}
-              className="btn-primary"
+              type="button"
+              onClick={() => setViewMode((m) => (m === "3d" ? "2d" : "3d"))}
+              className="btn-secondary"
               style={{ fontSize: 12 }}
+              aria-pressed={viewMode === "3d"}
             >
-              <span>Test in Hybrid Search</span>
-              <ArrowRight size={13} />
+              <Box size={13} />
+              <span>{viewMode === "3d" ? "Switch to 2D Stepper" : "Launch 3D Studio"}</span>
             </button>
-          )}
+            {onNavigateToSearch && (
+              <button
+                onClick={() => onNavigateToSearch(query)}
+                className="btn-primary"
+                style={{ fontSize: 12 }}
+              >
+                <span>Test in Hybrid Search</span>
+                <ArrowRight size={13} />
+              </button>
+            )}
+          </div>
         </div>
         <p className="page-description">
           Visual trace demonstrating the seven stages of query processing: from raw lexical tokenization through AST generation, semantic validation, intermediate representation, and RRF rank fusion.
@@ -159,6 +179,13 @@ export function PipelineView({
       )}
 
       {trace && selectedStage && (<>
+      {viewMode === "3d" && (
+        <Compiler3DScene
+          trace={trace}
+          selectedStageIndex={selectedStageIndex}
+          onSelectStage={setSelectedStageIndex}
+        />
+      )}
       {/* Interactive Horizontal Pipeline Stage Stepper */}
       <div
         className="surface-card"

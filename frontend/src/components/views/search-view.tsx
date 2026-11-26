@@ -1,9 +1,12 @@
 "use client";
 
 import React, { startTransition, useEffect, useMemo, useRef, useState } from "react";
+import dynamic from "next/dynamic";
+import { motion } from "framer-motion";
 import {
   AlertTriangle,
   AudioLines,
+  Box,
   Check,
   Copy,
   ExternalLink,
@@ -29,6 +32,11 @@ import type {
 import { sampleQueries } from "@/data/example-queries";
 import { extractHighlightTerms, highlightText } from "@/lib/highlight";
 import type { ToastTone } from "../ui/toast";
+
+const SearchResults3D = dynamic(
+  () => import("../3d/search-results-3d").then((m) => m.SearchResults3D),
+  { ssr: false }
+);
 
 interface SearchViewProps {
   query: string;
@@ -108,6 +116,7 @@ export function SearchView({
   const [voiceActive, setVoiceActive] = useState(false);
   const [showFiltersPanel, setShowFiltersPanel] = useState(false);
   const [showTraceDrawer, setShowTraceDrawer] = useState(settings.showCompilerDrawer);
+  const [show3DResults, setShow3DResults] = useState(true);
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
   const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const searchModeRef = useRef<SearchMode>(searchMode);
@@ -452,6 +461,17 @@ export function SearchView({
               <SlidersHorizontal size={13} aria-hidden="true" />
               <span>Filters &amp; Sort</span>
             </button>
+
+            <button
+              type="button"
+              onClick={() => setShow3DResults((v) => !v)}
+              className="btn-secondary"
+              aria-pressed={show3DResults}
+              style={{ fontSize: 12, padding: "6px 12px" }}
+            >
+              <Box size={13} aria-hidden="true" />
+              <span>{show3DResults ? "2D List" : "3D Fusion"}</span>
+            </button>
           </div>
         </div>
 
@@ -714,13 +734,25 @@ export function SearchView({
           }
         />
       ) : (
+        <>
+        {show3DResults && (
+          <SearchResults3D results={filteredResults} trace={trace} onSelectResult={onOpenPreview} />
+        )}
         <ul style={{ listStyle: "none" }} aria-label="Search results">
-          {filteredResults.map((result) => {
+          {filteredResults.map((result, idx) => {
             const isCode = result.kind === "code";
             const Icon = isCode ? FileCode2 : FileText;
 
             return (
-              <li key={result.id} className="result-card" data-testid="result-card">
+              <motion.li
+                key={result.id}
+                layout
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.18, delay: Math.min(idx * 0.03, 0.25) }}
+                className="result-card"
+                data-testid="result-card"
+              >
                 <div className="result-title-row" style={{ flexWrap: "wrap" }}>
                   <h2 className="result-title" style={{ minWidth: 0, flexWrap: "wrap" }}>
                     <Icon size={18} aria-hidden="true" style={{ color: isCode ? "#60a5fa" : "#fb7185", flexShrink: 0 }} />
@@ -843,10 +875,11 @@ export function SearchView({
                     </button>
                   </div>
                 </div>
-              </li>
+              </motion.li>
             );
           })}
         </ul>
+        </>
       )}
     </div>
   );

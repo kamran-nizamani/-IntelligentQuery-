@@ -1,9 +1,11 @@
 "use client";
 
 import React, { useState } from "react";
+import dynamic from "next/dynamic";
 import {
   ArrowRight,
   BookOpen,
+  Box,
   CheckCircle2,
   Code2,
   FileCode2,
@@ -19,6 +21,11 @@ import type { IndexedFile, SearchHistoryEntry } from "@/types/search";
 import type { AnalyticsResponse } from "@/lib/api-client";
 import type { NavItem } from "../shell/sidebar";
 import { sampleQueries } from "@/data/example-queries";
+
+const Dashboard3D = dynamic(
+  () => import("../3d/dashboard-3d").then((m) => m.Dashboard3D),
+  { ssr: false }
+);
 
 interface OverviewViewProps {
   /** `null` for any of these means the backend has not provided it (shown as "–", never invented). */
@@ -37,6 +44,7 @@ export function OverviewView({
   onExecuteSearch,
 }: OverviewViewProps) {
   const [searchInput, setSearchInput] = useState("");
+  const [show3D, setShow3D] = useState(true);
 
   const handleSearchSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -145,6 +153,21 @@ export function OverviewView({
           </div>
         </div>
       </div>
+
+      {/* 3D Search Engine Topology */}
+      <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 10 }}>
+        <button
+          type="button"
+          className="btn-secondary"
+          style={{ fontSize: 11.5, padding: "4px 10px" }}
+          onClick={() => setShow3D((v) => !v)}
+          aria-pressed={show3D}
+        >
+          <Box size={13} />
+          <span>{show3D ? "Hide 3D Engine Topology" : "Show 3D Engine Topology"}</span>
+        </button>
+      </div>
+      {show3D && <Dashboard3D metrics={metrics} files={files} recentHistory={recentHistory} />}
 
       {/* KPI Metrics Cards */}
       <div className="grid-metrics">

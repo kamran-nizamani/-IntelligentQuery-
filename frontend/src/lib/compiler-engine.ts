@@ -4,164 +4,20 @@ import type {
   CompilerTrace,
   QueryAST,
   QueryIR,
-  TokenKind,
 } from "@/types/search";
-
-const ACTION_WORDS = new Set(["find", "show", "search", "locate", "get", "list", "fetch"]);
-const TARGET_WORDS = new Map<string, string>([
-  ["functions", "function"],
-  ["function", "function"],
-  ["methods", "function"],
-  ["method", "function"],
-  ["classes", "class"],
-  ["class", "class"],
-  ["code", "code"],
-  ["files", "file"],
-  ["file", "file"],
-  ["documents", "document"],
-  ["document", "document"],
-  ["docs", "document"],
-  ["notes", "document"],
-  ["papers", "document"],
-]);
-
-const LANGUAGE_WORDS = new Map<string, string>([
-  ["python", "python"],
-  ["py", "python"],
-  ["javascript", "javascript"],
-  ["js", "javascript"],
-  ["java", "java"],
-  ["typescript", "typescript"],
-  ["ts", "typescript"],
-]);
-
-const RELATION_WORDS = new Set(["that", "which", "where", "with", "in", "about", "for", "handling", "processing"]);
-const LIMIT_WORDS = new Set(["top", "first", "limit"]);
+import { lexWithDfa } from "./compiler/dfa-lexer";
+import { parseQueryTokens } from "./compiler/parser";
+import { analyzeSemantics } from "./compiler/semantic-analyzer";
+import { formatIRPlan, lowerAstToIrDag } from "./compiler/ir-dag";
+import { runOptimizationPipeline, type OptimizationLevel } from "./compiler/optimizer";
+import { compileIrToBytecode } from "./compiler/vm";
 
 export function tokenizeQuery(query: string): CompilerToken[] {
-  const tokens: CompilerToken[] = [];
-  const regex = /"([^"]+)"|'([^']+)'|(\d+)|([A-Za-z0-9_#+-]+)|(\S)/g;
-  let match: RegExpExecArray | null;
-
-  while ((match = regex.exec(query)) !== null) {
-    const rawMatch = match[0];
-    const phrase = match[1] || match[2];
-    const numberVal = match[3];
-    const word = match[4];
-    const position = match.index;
-
-    if (phrase) {
-      tokens.push({
-        kind: "PHRASE",
-        value: phrase,
-        lexeme: rawMatch,
-        position,
-      });
-    } else if (numberVal) {
-      tokens.push({
-        kind: "NUMBER",
-        value: numberVal,
-        lexeme: rawMatch,
-        position,
-      });
-    } else if (word) {
-      const lower = word.toLowerCase();
-      let kind: TokenKind = "WORD";
-
-      if (ACTION_WORDS.has(lower)) {
-        kind = "ACTION";
-      } else if (TARGET_WORDS.has(lower)) {
-        kind = "TARGET";
-      } else if (LANGUAGE_WORDS.has(lower)) {
-        kind = "LANGUAGE";
-      } else if (RELATION_WORDS.has(lower)) {
-        kind = "RELATION";
-      } else if (LIMIT_WORDS.has(lower)) {
-        kind = "LIMIT";
-      }
-
-      tokens.push({
-        kind,
-        value: lower,
-        lexeme: word,
-        position,
-      });
-    }
-  }
-
-  tokens.push({
-    kind: "EOF",
-    value: "<EOF>",
-    lexeme: "",
-    position: query.length,
-  });
-
-  return tokens;
+  return lexWithDfa(query).tokens;
 }
 
 export function parseTokens(tokens: CompilerToken[], sourceText: string): QueryAST {
-  let action = "search";
-  let target: string | null = null;
-  let language: string | null = null;
-  let limit = 10;
-  const topicWords: string[] = [];
-
-  let idx = 0;
-  while (idx < tokens.length) {
-    const token = tokens[idx];
-    if (token.kind === "EOF") break;
-
-    if (token.kind === "ACTION" && idx === 0) {
-      action = token.value;
-      idx++;
-      continue;
-    }
-
-    if (token.kind === "LIMIT") {
-      const next = tokens[idx + 1];
-      if (next && next.kind === "NUMBER") {
-        limit = parseInt(next.value, 10);
-        idx += 2;
-        continue;
-      }
-    }
-
-    if (token.kind === "LANGUAGE") {
-      language = LANGUAGE_WORDS.get(token.value) || token.value;
-      idx++;
-      continue;
-    }
-
-    if (token.kind === "TARGET") {
-      target = TARGET_WORDS.get(token.value) || token.value;
-      idx++;
-      continue;
-    }
-
-    if (token.kind === "RELATION") {
-      idx++;
-      continue;
-    }
-
-    if (token.kind === "WORD" || token.kind === "PHRASE") {
-      topicWords.push(token.lexeme);
-      idx++;
-      continue;
-    }
-
-    idx++;
-  }
-
-  const topic = topicWords.join(" ").trim() || (sourceText.trim() ? sourceText.trim() : "general query");
-
-  return {
-    action,
-    target,
-    language,
-    topic,
-    limit,
-    sourceText,
-  };
+  return parseQueryTokens(tokens, sourceText).flatAst;
 }
 
 export function runSemanticAnalysis(ast: QueryAST): {
@@ -240,32 +96,40 @@ export function optimizeIR(ir: QueryIR): QueryIR {
   };
 }
 
-export function compileQueryTrace(sourceQuery: string): CompilerTrace {
+export function compileQueryTrace(
+  sourceQuery: string,
+  optimizationLevel: OptimizationLevel = "O2"
+): CompilerTrace {
   const t0 = performance.now();
 
-  // 1. Lexical Analysis
+  // 1. DFA Lexical Analysis
   const tLexerStart = performance.now();
-  const tokens = tokenizeQuery(sourceQuery);
+  const lexResult = lexWithDfa(sourceQuery);
+  const tokens = lexResult.tokens;
   const tLexer = +(performance.now() - tLexerStart).toFixed(2);
 
-  // 2. Syntax Analysis & AST Generation
+  // 2. Recursive-Descent + Pratt Parsing & AST Generation
   const tParserStart = performance.now();
-  const rawAst = parseTokens(tokens, sourceQuery);
+  const parseResult = parseQueryTokens(tokens, sourceQuery);
+  const rawAst = parseResult.flatAst;
   const tParser = +(performance.now() - tParserStart).toFixed(2);
 
-  // 3. Semantic Analysis
+  // 3. Semantic Analysis (Symbol Table + Type/Operator/Contradiction Diagnostics)
   const tSemanticStart = performance.now();
-  const semantic = runSemanticAnalysis(rawAst);
+  const semantic = analyzeSemantics(parseResult.astTree, rawAst);
   const tSemantic = +(performance.now() - tSemanticStart).toFixed(2);
 
-  // 4. IR Generation
+  // 4. IR Generation (Typed Operator DAG + Legacy QueryIR)
   const tIrStart = performance.now();
   const ir = generateIR(semantic.ast);
+  const irPlan = lowerAstToIrDag(parseResult.astTree, semantic.ast);
   const tIr = +(performance.now() - tIrStart).toFixed(2);
 
-  // 5. Query Optimization
+  // 5. Query Optimization (O0 / O1 / O2)
   const tOptStart = performance.now();
   const optimizedIr = optimizeIR(ir);
+  const optimization = runOptimizationPipeline(irPlan, optimizationLevel);
+  const executionPlan = compileIrToBytecode(optimization.optimizedPlan);
   const tOpt = +(performance.now() - tOptStart).toFixed(2);
 
   const totalTime = +(performance.now() - t0).toFixed(2);
@@ -273,54 +137,54 @@ export function compileQueryTrace(sourceQuery: string): CompilerTrace {
   const stages: CompilerStageInfo[] = [
     {
       id: "stage-1",
-      name: "1. Lexical Analysis (Lexer)",
+      name: "1. Lexical Analysis (DFA Lexer)",
       category: "compiler",
       status: "completed",
-      durationMs: Math.max(0.3, tLexer),
-      summary: "Transforms raw string stream into typed compiler tokens.",
+      durationMs: Math.max(0.1, tLexer),
+      summary: `DFA scanned ${sourceQuery.length} chars across ${lexResult.transitions.length} transitions into ${tokens.length} tokens.`,
       details:
-        "The Lexer scans the natural-language query and produces structured tokens: ACTION (imperatives like find/show), TARGET (function, class, document), LANGUAGE (python, js, java), RELATION (with, for), and WORD/PHRASE terms.",
+        "Deterministic Finite Automaton (DFA) scans input left-to-right with line/column tracking, escape sequence decoding, operator recognition, and invalid-token diagnostics.",
       inputPreview: `"${sourceQuery}"`,
-      outputPreview: `${tokens.length} tokens generated [${tokens.map((t) => t.kind).slice(0, 4).join(", ")}...]`,
-      rawOutput: tokens,
+      outputPreview: `${tokens.length} tokens, ${lexResult.transitions.length} DFA transitions (${lexResult.diagnostics.length} lex diagnostics)`,
+      rawOutput: { tokens, transitions: lexResult.transitions, diagnostics: lexResult.diagnostics },
     },
     {
       id: "stage-2",
-      name: "2. Syntax Analysis (Parser)",
+      name: "2. Syntax Analysis (Pratt + RD Parser)",
       category: "compiler",
       status: "completed",
-      durationMs: Math.max(0.4, tParser),
-      summary: "Evaluates token grammar according to formal query grammar rules.",
+      durationMs: Math.max(0.1, tParser),
+      summary: `Parsed token stream with operator precedence (OR < AND < NOT) and ${parseResult.diagnostics.length} syntax diagnostic(s).`,
       details:
-        "Validates the grammatical sequence of action imperatives, optional target specifications, target language qualifiers, and extracts the core descriptive topic.",
+        "Hybrid recursive-descent and Pratt operator-precedence parser supporting nested parentheses, boolean logic (AND/OR/NOT), field filters, and error recovery.",
       inputPreview: `${tokens.length} token stream`,
-      outputPreview: `Grammar matched: Action=${rawAst.action}, Target=${rawAst.target ?? "any"}, Lang=${rawAst.language ?? "any"}`,
-      rawOutput: rawAst,
+      outputPreview: `Action=${rawAst.action}, Target=${rawAst.target ?? "any"}, Lang=${rawAst.language ?? "any"}, Errors=${parseResult.diagnostics.length}`,
+      rawOutput: { parseTree: parseResult.parseTree, diagnostics: parseResult.diagnostics },
     },
     {
       id: "stage-3",
       name: "3. AST Generation",
       category: "compiler",
       status: "completed",
-      durationMs: 0.2,
-      summary: "Constructs a type-safe Abstract Syntax Tree node (QueryAST).",
+      durationMs: 0.1,
+      summary: "Constructs a typed Abstract Syntax Tree (AstProgramNode + QueryAST).",
       details:
-        "Packages parsed query attributes into an immutable QueryAST dataclass instance containing action, target, language, topic, limit, and source text.",
-      inputPreview: "Validated syntax grammar",
-      outputPreview: `QueryAST(action="${rawAst.action}", target=${rawAst.target ? `"${rawAst.target}"` : "null"}, topic="${rawAst.topic}")`,
-      rawOutput: rawAst,
+        "Packages parsed expressions, boolean operators, field filters, phrases, and terms into an immutable typed AST with exact source spans.",
+      inputPreview: "Concrete Parse Tree",
+      outputPreview: `QueryProgram(action="${rawAst.action}", target=${rawAst.target ? `"${rawAst.target}"` : "null"}, topic="${rawAst.topic}")`,
+      rawOutput: parseResult.astTree,
     },
     {
       id: "stage-4",
       name: "4. Semantic Analysis",
       category: "compiler",
       status: "completed",
-      durationMs: Math.max(0.3, tSemantic),
+      durationMs: Math.max(0.1, tSemantic),
       summary: "Enforces semantic invariants, symbol resolution, and vocabulary checks.",
       details:
         "Verifies that requested language and target combinations are coherent (e.g. checks that documents do not conflict with programming languages) and validates topic searchability against indexed vocabulary.",
-      inputPreview: "QueryAST dataclass",
-      outputPreview: `Status: ${semantic.valid ? "Valid" : "Invalid"} | Warnings: ${semantic.warnings.length} | Target: ${semantic.targetResolved ?? "broad"}`,
+      inputPreview: "Typed AST",
+      outputPreview: `Status: ${semantic.valid ? "Valid" : "Invalid"} | Diagnostics: ${semantic.diagnostics.length} | Symbols: ${semantic.symbolTable.length}`,
       rawOutput: semantic,
     },
     {
@@ -328,39 +192,39 @@ export function compileQueryTrace(sourceQuery: string): CompilerTrace {
       name: "5. Intermediate Representation (IR)",
       category: "compiler",
       status: "completed",
-      durationMs: Math.max(0.3, tIr),
-      summary: "Emits engine-independent QueryIR with execution plan and filters.",
+      durationMs: Math.max(0.1, tIr),
+      summary: `Emits typed IR operator DAG (${irPlan.nodeCount} nodes, ${irPlan.edges.length} edges).`,
       details:
-        "Translates semantic AST into formal QueryIR dataclass specifying the operation ('HYBRID_SEARCH'), concrete metadata filters (content_kind, symbol_kind, language), dual lexical & semantic query strings, and fusion strategy ('rrf').",
-      inputPreview: "Semantically validated QueryAST",
-      outputPreview: `QueryIR(op="${ir.operation}", filters=${JSON.stringify(ir.filters)}, fusion="${ir.fusion}")`,
-      rawOutput: ir,
+        "Translates semantic AST into a typed operator DAG specifying HYBRID_SEARCH, boolean operators, metadata filters, lexical/semantic scans, and limits.",
+      inputPreview: "Semantically validated AST",
+      outputPreview: `IRPlan(${irPlan.nodeCount} nodes, valid=${irPlan.valid}) | ${ir.operation}`,
+      rawOutput: { ir, dagText: formatIRPlan(irPlan.root), irPlan },
     },
     {
       id: "stage-6",
       name: "6. Query Optimization",
       category: "compiler",
       status: "completed",
-      durationMs: Math.max(0.2, tOpt),
-      summary: "Performs filter canonicalization and whitespace normalization.",
+      durationMs: Math.max(0.1, tOpt),
+      summary: `Level ${optimizationLevel}: ${optimization.appliedPasses.length} pass(es) applied; cost ${optimization.costBefore.totalCost} -> ${optimization.costAfter.totalCost}.`,
       details:
-        "Sorts filter predicates for consistent cache keying, lowercases filter values, collapses redundant whitespace in search queries, and prepares optimized execution plan.",
-      inputPreview: "Initial QueryIR",
-      outputPreview: `Optimized QueryIR | Filters: ${Object.keys(optimizedIr.filters).length} | Cleaned topic: "${optimizedIr.lexicalQuery}"`,
-      rawOutput: optimizedIr,
+        "Applies constant folding, double-negation elimination, De Morgan transforms, CSE, query normalization, and cost-based predicate ordering.",
+      inputPreview: `Initial IR (cost ${optimization.costBefore.totalCost})`,
+      outputPreview: `Optimized IR (cost ${optimization.costAfter.totalCost}) | Passes: ${optimization.appliedPasses.join(", ") || "none"}`,
+      rawOutput: { optimizedIr, optimization },
     },
     {
       id: "stage-7",
-      name: "7. Hybrid Search (RRF Execution)",
+      name: "7. Hybrid Search (VM & RRF Execution)",
       category: "retrieval",
       status: "completed",
       durationMs: 0,
-      summary: "Executes parallel PostgreSQL GIN FTS + pgvector HNSW search fused with RRF.",
+      summary: `Compiled ${executionPlan.bytecode.length} VM instructions for PostgreSQL GIN FTS + pgvector HNSW (RRF k=60).`,
       details:
-        "Dispatches dual queries to Supabase hybrid_search_rrf: 1) Lexical PostgreSQL full-text search (GIN) for exact keyword/symbol matching, and 2) pgvector HNSW 384-D MiniLM embeddings for dense semantic similarity. Combines ranks using Reciprocal Rank Fusion (k=60).",
-      inputPreview: `Lexical: "${optimizedIr.lexicalQuery}" | Semantic: "${optimizedIr.semanticQuery}" | RRF k=60`,
+        "Compiles optimized IR DAG into stack-oriented query bytecode and dispatches dual lexical & semantic queries to Supabase hybrid_search_rrf fused via Reciprocal Rank Fusion (k=60).",
+      inputPreview: `${executionPlan.bytecode.length} VM bytecode ops | "${optimizedIr.lexicalQuery}"`,
       outputPreview: "Dual-ranked candidate list fused and scored via hybrid_search_rrf",
-      rawOutput: { fusion: "rrf", k: 60, indexes: ["postgres_gin_fts", "pgvector_hnsw"] },
+      rawOutput: { fusion: "rrf", k: 60, indexes: ["postgres_gin_fts", "pgvector_hnsw"], executionPlan },
     },
   ];
 
@@ -368,9 +232,21 @@ export function compileQueryTrace(sourceQuery: string): CompilerTrace {
     sourceQuery,
     tokens,
     ast: semantic.ast,
+    astTree: parseResult.astTree,
+    parseTree: parseResult.parseTree,
+    dfaTrace: {
+      transitions: lexResult.transitions,
+      statesVisited: lexResult.statesVisited,
+    },
+    lexicalDiagnostics: lexResult.diagnostics,
+    syntaxDiagnostics: parseResult.diagnostics,
     semanticStatus: semantic,
     ir,
     optimizedIr,
+    irPlan: optimization.optimizedPlan,
+    optimization,
+    optimizationLevel,
+    executionPlan,
     stages,
     totalCompilationTimeMs: totalTime,
   };

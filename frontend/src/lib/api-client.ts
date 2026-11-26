@@ -8,9 +8,16 @@ import type {
   SystemMetrics,
   SourceKind,
   SourceType,
+  VMExecutionTrace,
 } from "@/types/search";
 import { getSupabaseClient, isSupabaseConfigured } from "./supabase/client";
 import { compileQueryTrace } from "./compiler-engine";
+import { QueryExecutionVM } from "./compiler/vm";
+import {
+  buildMatchExplanation,
+  deduplicateResults,
+  expandDeveloperQuery,
+} from "./compiler/query-intelligence";
 import { sanitizeFileName, validateUploads } from "./upload-validation";
 
 let anonymousSignInPromise: Promise<User> | null = null;
@@ -39,6 +46,8 @@ export type SearchResponse = {
   latencyMs: number;
   trace: CompilerTrace;
   totalHits: number;
+  vmTrace?: VMExecutionTrace;
+  expandedTerms?: string[];
 };
 
 export type AnalyticsResponse = SystemMetrics & {
@@ -146,11 +155,12 @@ export class ApiClient {
     const t0 = performance.now();
     const trace = compileQueryTrace(query);
     const plan = trace.optimizedIr;
+    const expansion = expandDeveloperQuery(plan.semanticQuery || query);
 
     const embedding =
       options.mode === "lexical"
         ? null
-        : await (await import("./embeddings/web-embedder")).embedText(plan.semanticQuery || query);
+        : await (await import("./embeddings/web-embedder")).embedText(expansion.expandedQuery || plan.semanticQuery || query);
 
     interface SupabaseChunkRow {
       chunk_id: string;
@@ -183,43 +193,57 @@ export class ApiClient {
       (token, index) => token.kind === "LIMIT" && trace.tokens[index + 1]?.kind === "NUMBER"
     );
     const requestedLimit = hasExplicitLimit ? plan.limit : (options.limit ?? 10);
+    const minSim = trace.executionPlan?.minSimilarity ?? DEFAULT_MIN_SIMILARITY;
 
-    const { data: initialData, error } = await supabase.rpc("hybrid_search_rrf", {
-      query_text: plan.lexicalQuery || query,
-      query_embedding: embedding,
-      match_limit: requestedLimit,
-      filter_kind: rpcKind,
-      filter_language: rpcLang,
-      filter_symbol: rpcSymbol,
-      rrf_k: 60,
-      search_mode: options.mode || "hybrid",
-      min_similarity: DEFAULT_MIN_SIMILARITY,
-    });
-    let data = initialData;
+    const vm = new QueryExecutionVM();
+    let vmTrace: VMExecutionTrace | undefined;
 
-    // Fallback: if narrow compiler filters produced 0 results, retry without language/symbol filters
-    if (!error && (!data || (data as unknown[]).length === 0) && (rpcLang || rpcSymbol)) {
-      const fallbackRes = await supabase.rpc("hybrid_search_rrf", {
-        query_text: query,
+    const executeRpc = async () => {
+      const { data: initialData, error } = await supabase.rpc("hybrid_search_rrf", {
+        query_text: plan.lexicalQuery || query,
         query_embedding: embedding,
         match_limit: requestedLimit,
         filter_kind: rpcKind,
-        filter_language: null,
-        filter_symbol: null,
+        filter_language: rpcLang,
+        filter_symbol: rpcSymbol,
         rrf_k: 60,
         search_mode: options.mode || "hybrid",
-        min_similarity: DEFAULT_MIN_SIMILARITY,
+        min_similarity: minSim,
       });
-      if (!fallbackRes.error && fallbackRes.data && (fallbackRes.data as unknown[]).length > 0) {
-        data = fallbackRes.data;
+      let data = initialData;
+
+      // Fallback: if narrow compiler filters produced 0 results, retry without language/symbol filters
+      if (!error && (!data || (data as unknown[]).length === 0) && (rpcLang || rpcSymbol)) {
+        const fallbackRes = await supabase.rpc("hybrid_search_rrf", {
+          query_text: query,
+          query_embedding: embedding,
+          match_limit: requestedLimit,
+          filter_kind: rpcKind,
+          filter_language: null,
+          filter_symbol: null,
+          rrf_k: 60,
+          search_mode: options.mode || "hybrid",
+          min_similarity: minSim,
+        });
+        if (!fallbackRes.error && fallbackRes.data && (fallbackRes.data as unknown[]).length > 0) {
+          data = fallbackRes.data;
+        }
       }
-    }
 
-    if (error) {
-      throw new ApiError(`Search query execution failed: ${error.message}`, 500);
-    }
+      if (error) {
+        throw new ApiError(`Search query execution failed: ${error.message}`, 500);
+      }
+      return (data || []) as SupabaseChunkRow[];
+    };
 
-    const rows = (data || []) as SupabaseChunkRow[];
+    let rows: SupabaseChunkRow[];
+    if (trace.irPlan) {
+      const vmOut = await vm.execute(trace.irPlan, executeRpc);
+      rows = vmOut.result;
+      vmTrace = vmOut.vmTrace;
+    } else {
+      rows = await executeRpc();
+    }
     const latencyMs = +(performance.now() - t0).toFixed(1);
 
     let results: SearchResult[] = rows.map((row) => {
@@ -244,12 +268,16 @@ export class ApiClient {
       if (row.lexical_rank && !row.vector_rank) matchType = "lexical";
       else if (!row.lexical_rank && row.vector_rank) matchType = "semantic";
 
-      const description =
-        row.lexical_rank && row.vector_rank
-          ? `Lexical rank #${row.lexical_rank} · Vector rank #${row.vector_rank}`
-          : row.lexical_rank
-          ? `Lexical rank #${row.lexical_rank}`
-          : `Vector rank #${row.vector_rank}`;
+      const description = buildMatchExplanation(
+        {
+          lexicalRank: row.lexical_rank,
+          vectorRank: row.vector_rank,
+          language: row.language,
+          symbolKind: row.symbol_kind,
+          symbolName: row.symbol_name,
+        },
+        plan.filters
+      );
 
       return {
         id: `chunk-${row.chunk_id}`,
@@ -270,6 +298,8 @@ export class ApiClient {
         tags: Array.from(tagSet),
       };
     });
+
+    results = deduplicateResults(results);
 
     if (options.type && options.type !== "all") {
       const targetType = options.type.toUpperCase();
@@ -301,6 +331,8 @@ export class ApiClient {
       latencyMs,
       trace,
       totalHits: results.length,
+      vmTrace,
+      expandedTerms: expansion.expandedTerms,
     };
   }
 

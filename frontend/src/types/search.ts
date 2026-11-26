@@ -37,23 +37,39 @@ export type IndexedFile = {
   contentPreview?: string;
 };
 
-export type TokenKind =
-  | "ACTION"
-  | "TARGET"
-  | "LANGUAGE"
-  | "RELATION"
-  | "LIMIT"
-  | "NUMBER"
-  | "WORD"
-  | "PHRASE"
-  | "EOF";
+import type {
+  AstProgramNode,
+  CompilerToken,
+  DFAState,
+  DFATransition,
+  LexDiagnostic,
+  ParseTreeNode,
+  SyntaxDiagnostic,
+} from "@/lib/compiler/tokens";
+import type { SemanticDiagnostic } from "@/lib/compiler/diagnostics";
+import type { ResolvedSymbolEntry } from "@/lib/compiler/symbol-table";
+import type { IRPlan } from "@/lib/compiler/ir-dag";
+import type { OptimizationLevel, OptimizationResult } from "@/lib/compiler/optimizer";
+import type { CompiledExecutionPlan } from "@/lib/compiler/vm";
 
-export type CompilerToken = {
-  kind: TokenKind;
-  value: string;
-  lexeme: string;
-  position: number;
-};
+export type {
+  AstExprNode,
+  AstProgramNode,
+  CompilerToken,
+  DFAState,
+  DFATransition,
+  FilterOperator,
+  LexDiagnostic,
+  ParseTreeNode,
+  SourceSpan,
+  SyntaxDiagnostic,
+  TokenKind,
+} from "@/lib/compiler/tokens";
+export type { SemanticDiagnostic } from "@/lib/compiler/diagnostics";
+export type { ResolvedSymbolEntry } from "@/lib/compiler/symbol-table";
+export type { IRNode, IRPlan } from "@/lib/compiler/ir-dag";
+export type { OptimizationLevel, OptimizationResult, CostBreakdown } from "@/lib/compiler/optimizer";
+export type { CompiledExecutionPlan, QueryBytecodeInstruction, VMExecutionTrace } from "@/lib/compiler/vm";
 
 export type QueryAST = {
   action: string;
@@ -90,15 +106,29 @@ export type CompilerTrace = {
   sourceQuery: string;
   tokens: CompilerToken[];
   ast: QueryAST;
+  astTree?: AstProgramNode;
+  parseTree?: ParseTreeNode;
+  dfaTrace?: {
+    transitions: DFATransition[];
+    statesVisited: DFAState[];
+  };
+  lexicalDiagnostics?: LexDiagnostic[];
+  syntaxDiagnostics?: SyntaxDiagnostic[];
   semanticStatus: {
     valid: boolean;
     targetResolved: string | null;
     languageResolved: string | null;
     warnings: string[];
+    diagnostics?: SemanticDiagnostic[];
+    symbolTable?: ResolvedSymbolEntry[];
     vocabularyChecked: boolean;
   };
   ir: QueryIR;
   optimizedIr: QueryIR;
+  irPlan?: IRPlan;
+  optimization?: OptimizationResult;
+  optimizationLevel?: OptimizationLevel;
+  executionPlan?: CompiledExecutionPlan;
   stages: CompilerStageInfo[];
   totalCompilationTimeMs: number;
 };

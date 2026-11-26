@@ -1,17 +1,27 @@
 "use client";
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
+import dynamic from "next/dynamic";
 import {
   AlertTriangle,
   ArrowRight,
+  Box,
   CheckCircle2,
+  Download,
   Play,
   Terminal,
 } from "lucide-react";
-import type { CompilerTrace, CompilerToken } from "@/types/search";
+import type { CompilerTrace, CompilerToken, OptimizationLevel } from "@/types/search";
 import { apiClient } from "@/lib/api-client";
+import { compileQueryTrace } from "@/lib/compiler-engine";
+import { formatIRPlan } from "@/lib/compiler/ir-dag";
 import { sampleQueries } from "@/data/example-queries";
 import { TraceSourceNotice, type TraceSource } from "../ui/trace-source-notice";
+
+const Analyzer3D = dynamic(
+  () => import("../3d/analyzer-3d").then((m) => m.Analyzer3D),
+  { ssr: false }
+);
 
 interface AnalyzerViewProps {
   initialQuery?: string;
@@ -28,17 +38,20 @@ export function AnalyzerView({
   const [error, setError] = useState<string | null>(null);
   const requestSeq = useRef(0);
   const [selectedToken, setSelectedToken] = useState<CompilerToken | null>(null);
-  const [activeTab, setActiveTab] = useState<"tokens" | "ast" | "semantic" | "ir" | "optimizer">("tokens");
+  const [activeTab, setActiveTab] = useState<"tokens" | "dfa" | "ast" | "semantic" | "ir" | "optimizer" | "vm">("tokens");
+  const [optLevel, setOptLevel] = useState<OptimizationLevel>("O2");
   const [compiling, setCompiling] = useState(false);
+  const [show3D, setShow3D] = useState(true);
 
-  const handleCompile = useCallback(async (qToCompile: string) => {
+  const handleCompile = useCallback(async (qToCompile: string, level: OptimizationLevel = optLevel) => {
     const text = qToCompile.trim();
     if (!text) return;
     const seq = ++requestSeq.current;
     setCompiling(true);
     setError(null);
     try {
-      const realTrace = await apiClient.explain(text);
+      const realTrace =
+        level === "O2" ? await apiClient.explain(text) : compileQueryTrace(text, level);
       if (seq !== requestSeq.current) return;
       setTrace(realTrace);
       setSource("local");
@@ -53,7 +66,7 @@ export function AnalyzerView({
         setSelectedToken(null);
       }
     }
-  }, []);
+  }, [optLevel]);
 
   // Compile when the app hands us a (new) query; typing in the box does not trigger this.
   useEffect(() => {
@@ -70,6 +83,20 @@ export function AnalyzerView({
     NUMBER: { bg: "rgba(168, 85, 247, 0.15)", text: "var(--tok-number)", border: "rgba(168, 85, 247, 0.4)" },
     WORD: { bg: "rgba(148, 163, 184, 0.15)", text: "var(--tok-word)", border: "rgba(148, 163, 184, 0.4)" },
     PHRASE: { bg: "rgba(20, 184, 166, 0.15)", text: "var(--tok-phrase)", border: "rgba(20, 184, 166, 0.4)" },
+    AND: { bg: "rgba(245, 158, 11, 0.18)", text: "#fbbf24", border: "rgba(245, 158, 11, 0.45)" },
+    OR: { bg: "rgba(245, 158, 11, 0.18)", text: "#fbbf24", border: "rgba(245, 158, 11, 0.45)" },
+    NOT: { bg: "rgba(239, 68, 68, 0.16)", text: "#f87171", border: "rgba(239, 68, 68, 0.45)" },
+    LPAREN: { bg: "rgba(148, 163, 184, 0.15)", text: "#cbd5e1", border: "rgba(148, 163, 184, 0.4)" },
+    RPAREN: { bg: "rgba(148, 163, 184, 0.15)", text: "#cbd5e1", border: "rgba(148, 163, 184, 0.4)" },
+    COLON: { bg: "rgba(14, 165, 233, 0.15)", text: "#38bdf8", border: "rgba(14, 165, 233, 0.4)" },
+    OP_EQ: { bg: "rgba(14, 165, 233, 0.15)", text: "#38bdf8", border: "rgba(14, 165, 233, 0.4)" },
+    OP_NEQ: { bg: "rgba(14, 165, 233, 0.15)", text: "#38bdf8", border: "rgba(14, 165, 233, 0.4)" },
+    OP_GT: { bg: "rgba(14, 165, 233, 0.15)", text: "#38bdf8", border: "rgba(14, 165, 233, 0.4)" },
+    OP_GTE: { bg: "rgba(14, 165, 233, 0.15)", text: "#38bdf8", border: "rgba(14, 165, 233, 0.4)" },
+    OP_LT: { bg: "rgba(14, 165, 233, 0.15)", text: "#38bdf8", border: "rgba(14, 165, 233, 0.4)" },
+    OP_LTE: { bg: "rgba(14, 165, 233, 0.15)", text: "#38bdf8", border: "rgba(14, 165, 233, 0.4)" },
+    BOOLEAN: { bg: "rgba(168, 85, 247, 0.15)", text: "var(--tok-number)", border: "rgba(168, 85, 247, 0.4)" },
+    INVALID: { bg: "rgba(239, 68, 68, 0.22)", text: "#fca5a5", border: "rgba(239, 68, 68, 0.6)" },
     EOF: { bg: "rgba(100, 116, 139, 0.15)", text: "var(--tok-eof)", border: "rgba(100, 116, 139, 0.4)" },
   };
 
@@ -83,16 +110,74 @@ export function AnalyzerView({
             <h1 className="page-title">Query Analyzer</h1>
           </div>
 
-          {onExecuteInSearch && (
-            <button
-              onClick={() => onExecuteInSearch(inputQuery)}
-              className="btn-primary"
-              style={{ fontSize: 12 }}
-            >
-              <span>Execute in Search Workspace</span>
-              <ArrowRight size={13} />
-            </button>
-          )}
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            <div style={{ display: "inline-flex", gap: 3, background: "var(--bg-card-subtle)", border: "1px solid var(--border-card)", borderRadius: 6, padding: 2 }}>
+              {(["O0", "O1", "O2"] as const).map((lvl) => (
+                <button
+                  key={lvl}
+                  type="button"
+                  onClick={() => {
+                    setOptLevel(lvl);
+                    void handleCompile(inputQuery, lvl);
+                  }}
+                  style={{
+                    padding: "4px 8px",
+                    borderRadius: 4,
+                    border: "none",
+                    fontSize: 11,
+                    fontFamily: "var(--font-mono)",
+                    fontWeight: 700,
+                    cursor: "pointer",
+                    background: optLevel === lvl ? "var(--accent-primary)" : "transparent",
+                    color: optLevel === lvl ? "#fff" : "var(--text-muted)",
+                  }}
+                >
+                  -{lvl}
+                </button>
+              ))}
+            </div>
+            {trace && (
+              <button
+                type="button"
+                className="btn-secondary"
+                style={{ fontSize: 12 }}
+                aria-pressed={show3D}
+                onClick={() => setShow3D((v) => !v)}
+              >
+                <Box size={13} />
+                <span>{show3D ? "2D Only" : "3D Stage"}</span>
+              </button>
+            )}
+            {trace && (
+              <button
+                type="button"
+                className="btn-secondary"
+                style={{ fontSize: 12 }}
+                onClick={() => {
+                  const blob = new Blob([JSON.stringify(trace, null, 2)], { type: "application/json" });
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement("a");
+                  a.href = url;
+                  a.download = "compiler-trace.json";
+                  a.click();
+                  URL.revokeObjectURL(url);
+                }}
+              >
+                <Download size={13} />
+                <span>Export JSON</span>
+              </button>
+            )}
+            {onExecuteInSearch && (
+              <button
+                onClick={() => onExecuteInSearch(inputQuery)}
+                className="btn-primary"
+                style={{ fontSize: 12 }}
+              >
+                <span>Execute in Search Workspace</span>
+                <ArrowRight size={13} />
+              </button>
+            )}
+          </div>
         </div>
         <p className="page-description">
           Demonstrates compiler front-end query decomposition: Lexical Scanner, Recursive-Descent
@@ -237,10 +322,12 @@ export function AnalyzerView({
       >
         {[
           { id: "tokens", label: "1. Token Stream", count: trace.tokens.length },
-          { id: "ast", label: "2. Abstract Syntax Tree (AST)" },
+          { id: "dfa", label: "1b. DFA Explorer" },
+          { id: "ast", label: "2. AST & Parse Tree" },
           { id: "semantic", label: "3. Semantic Analysis" },
-          { id: "ir", label: "4. Intermediate Representation (IR)" },
+          { id: "ir", label: "4. IR Operator DAG" },
           { id: "optimizer", label: "5. IR Optimizer" },
+          { id: "vm", label: "6. VM & Bytecode" },
         ].map((tab) => (
           <button
             key={tab.id}
@@ -269,6 +356,7 @@ export function AnalyzerView({
       </div>
 
       {/* Tab 1: Token Stream */}
+      {trace && show3D && <Analyzer3D trace={trace} activeTab={activeTab} />}
       {activeTab === "tokens" && (
         <div className="surface-card" role="tabpanel" id="panel-tokens" aria-labelledby="tab-tokens">
           <div style={{ marginBottom: 14 }}>
@@ -331,6 +419,7 @@ export function AnalyzerView({
                 <div>Normalized Value: <strong style={{ color: "var(--text-main)", fontFamily: "var(--font-mono)" }}>{selectedToken.value}</strong></div>
                 <div>Lexeme: <strong style={{ color: "var(--text-main)", fontFamily: "var(--font-mono)" }}>&quot;{selectedToken.lexeme}&quot;</strong></div>
                 <div>Start Position: <strong style={{ color: "var(--info)", fontFamily: "var(--font-mono)" }}>Index {selectedToken.position}</strong></div>
+                <div>Span: <strong style={{ color: "var(--text-main)", fontFamily: "var(--font-mono)" }}>{selectedToken.span ? `${selectedToken.span.startLine}:${selectedToken.span.startColumn}–${selectedToken.span.endLine}:${selectedToken.span.endColumn} (${selectedToken.span.startOffset}..${selectedToken.span.endOffset})` : `Index ${selectedToken.position}`}</strong></div>
               </div>
             </div>
           ) : (
@@ -341,17 +430,86 @@ export function AnalyzerView({
         </div>
       )}
 
-      {/* Tab 2: AST Tree */}
+      {/* Tab 1b: DFA Transition Explorer */}
+      {activeTab === "dfa" && (
+        <div className="surface-card" role="tabpanel" id="panel-dfa" aria-labelledby="tab-dfa">
+          <div style={{ marginBottom: 14 }}>
+            <h3 style={{ fontSize: 14, fontWeight: 700, color: "var(--text-main)", marginBottom: 4 }}>
+              DFA Lexical Transition Explorer
+            </h3>
+            <p style={{ fontSize: 12, color: "var(--text-muted)" }}>
+              Deterministic Finite Automaton state transitions recorded while scanning the query.
+            </p>
+          </div>
+
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 16 }}>
+            {(trace.dfaTrace?.statesVisited ?? []).map((st) => (
+              <span key={st} className="badge badge-semantic" style={{ fontFamily: "var(--font-mono)", fontSize: 11 }}>
+                {st}
+              </span>
+            ))}
+          </div>
+
+          {(trace.lexicalDiagnostics?.length ?? 0) > 0 && (
+            <div style={{ marginBottom: 14, padding: 10, borderRadius: 6, background: "var(--danger-subtle)", border: "1px solid var(--danger)" }}>
+              {trace.lexicalDiagnostics?.map((d, idx) => (
+                <div key={idx} style={{ fontSize: 12, color: "var(--text-main)", fontFamily: "var(--font-mono)" }}>
+                  [{d.code}] {d.message} {d.suggestion ? `(${d.suggestion})` : ""}
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div className="table-scroll" style={{ maxHeight: 320, overflowY: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, fontFamily: "var(--font-mono)", textAlign: "left" }}>
+              <thead>
+                <tr style={{ borderBottom: "1px solid var(--border-subtle)", color: "var(--text-faint)" }}>
+                  <th style={{ padding: "6px 10px" }}>Step</th>
+                  <th style={{ padding: "6px 10px" }}>From</th>
+                  <th style={{ padding: "6px 10px" }}>Input</th>
+                  <th style={{ padding: "6px 10px" }}>To</th>
+                  <th style={{ padding: "6px 10px" }}>Loc</th>
+                  <th style={{ padding: "6px 10px" }}>Emitted</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(trace.dfaTrace?.transitions ?? []).slice(0, 120).map((tr) => (
+                  <tr key={tr.step} style={{ borderBottom: "1px solid var(--border-subtle)" }}>
+                    <td style={{ padding: "5px 10px", color: "var(--text-muted)" }}>{tr.step}</td>
+                    <td style={{ padding: "5px 10px", color: "var(--info)" }}>{tr.fromState}</td>
+                    <td style={{ padding: "5px 10px", color: "var(--text-main)" }}>{JSON.stringify(tr.inputChar)}</td>
+                    <td style={{ padding: "5px 10px", color: tr.toState === "ERROR" ? "var(--danger)" : "var(--success)" }}>{tr.toState}</td>
+                    <td style={{ padding: "5px 10px", color: "var(--text-muted)" }}>{tr.line}:{tr.column}</td>
+                    <td style={{ padding: "5px 10px", color: "var(--accent-text)" }}>{tr.emittedTokenKind ?? "–"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Tab 2: AST & Parse Tree */}
       {activeTab === "ast" && (
         <div className="surface-card" role="tabpanel" id="panel-ast" aria-labelledby="tab-ast">
           <div style={{ marginBottom: 14 }}>
             <h3 style={{ fontSize: 14, fontWeight: 700, color: "var(--text-main)", marginBottom: 4 }}>
-              Abstract Syntax Tree (AST)
+              Abstract Syntax Tree (AST) &amp; Concrete Parse Tree
             </h3>
             <p style={{ fontSize: 12, color: "var(--text-muted)" }}>
-              Structured node hierarchy produced by recursive-descent parsing over grammar constraints.
+              Structured node hierarchy produced by recursive-descent and Pratt operator-precedence parsing.
             </p>
           </div>
+
+          {(trace.syntaxDiagnostics?.length ?? 0) > 0 && (
+            <div style={{ marginBottom: 14, padding: 10, borderRadius: 6, background: "var(--danger-subtle)", border: "1px solid var(--danger)" }}>
+              {trace.syntaxDiagnostics?.map((d, idx) => (
+                <div key={idx} style={{ fontSize: 12, color: "var(--text-main)", fontFamily: "var(--font-mono)" }}>
+                  [{d.code}] {d.message} (expected: {d.expected.join(" | ")}, found: {d.found})
+                </div>
+              ))}
+            </div>
+          )}
 
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 280px), 1fr))", gap: 16 }}>
             {/* Visual AST Node Tree */}
@@ -366,7 +524,7 @@ export function AnalyzerView({
                 lineHeight: 1.8,
               }}
             >
-              <div style={{ color: "#818cf8", fontWeight: 700 }}>QueryAST [Root]</div>
+              <div style={{ color: "#818cf8", fontWeight: 700 }}>QueryAST [Projected Summary]</div>
               <div style={{ paddingLeft: 18, borderLeft: "1px dashed var(--border-card)" }}>
                 <div>├─ action: <span style={{ color: "#34d399" }}>&quot;{trace.ast.action}&quot;</span></div>
                 <div>├─ target: <span style={{ color: trace.ast.target ? "#fbbf24" : "var(--text-faint)" }}>{trace.ast.target ? `"${trace.ast.target}"` : "None"}</span></div>
@@ -377,20 +535,22 @@ export function AnalyzerView({
               </div>
             </div>
 
-            {/* JSON Dataclass representation */}
+            {/* Typed AST & Parse Tree JSON */}
             <div
               style={{
                 background: "var(--bg-code)",
                 padding: 16,
                 borderRadius: "var(--radius-md)",
                 border: "1px solid var(--border-subtle)",
+                maxHeight: 340,
+                overflowY: "auto",
               }}
             >
               <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-faint)", textTransform: "uppercase", marginBottom: 6 }}>
-                Python Dataclass asdict(self)
+                Typed AstProgramNode
               </div>
-              <pre style={{ fontSize: 12, fontFamily: "var(--font-mono)", color: "#a5b4fc", overflowX: "auto" }}>
-{JSON.stringify(trace.ast, null, 2)}
+              <pre style={{ fontSize: 11.5, fontFamily: "var(--font-mono)", color: "#a5b4fc", overflowX: "auto" }}>
+{JSON.stringify(trace.astTree ?? trace.ast, null, 2)}
               </pre>
             </div>
           </div>
@@ -482,23 +642,42 @@ export function AnalyzerView({
               </span>
             </div>
 
-            {trace.semanticStatus.warnings.length > 0 && (
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "flex-start",
-                  gap: 10,
-                  padding: 12,
-                  borderRadius: 6,
-                  background: "var(--warning-subtle)",
-                  border: "1px solid rgba(245, 158, 11, 0.3)",
-                }}
-              >
-                <AlertTriangle size={16} style={{ color: "var(--warning)", marginTop: 2 }} />
-                <div>
-                  <strong style={{ fontSize: 12.5, color: "var(--warning)" }}>Semantic Warning</strong>
-                  {trace.semanticStatus.warnings.map((w, idx) => (
-                    <div key={idx} style={{ fontSize: 11.5, color: "var(--text-main)" }}>{w}</div>
+            {(trace.semanticStatus.diagnostics?.length ?? 0) > 0 && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                {trace.semanticStatus.diagnostics?.map((diag, idx) => (
+                  <div
+                    key={idx}
+                    style={{
+                      padding: 12,
+                      borderRadius: 6,
+                      background: diag.severity === "error" ? "var(--danger-subtle)" : "var(--warning-subtle)",
+                      border: `1px solid ${diag.severity === "error" ? "var(--danger)" : "rgba(245, 158, 11, 0.35)"}`,
+                    }}
+                  >
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                      <AlertTriangle size={15} style={{ color: diag.severity === "error" ? "var(--danger)" : "var(--warning)" }} />
+                      <strong style={{ fontSize: 12.5, color: diag.severity === "error" ? "var(--danger)" : "var(--warning)" }}>
+                        {diag.severity.toUpperCase()} [{diag.code}]: {diag.message}
+                      </strong>
+                    </div>
+                    <pre style={{ fontSize: 11.5, fontFamily: "var(--font-mono)", color: "var(--text-main)", background: "var(--bg-code)", padding: 10, borderRadius: 4, overflowX: "auto" }}>
+                      {diag.rendered}
+                    </pre>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {(trace.semanticStatus.symbolTable?.length ?? 0) > 0 && (
+              <div style={{ marginTop: 8, padding: 12, borderRadius: 6, background: "var(--bg-card-subtle)", border: "1px solid var(--border-subtle)" }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-faint)", textTransform: "uppercase", marginBottom: 8 }}>
+                  Resolved Symbol Table ({trace.semanticStatus.symbolTable?.length ?? 0} entries)
+                </div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                  {trace.semanticStatus.symbolTable?.map((sym, idx) => (
+                    <span key={idx} className="badge badge-semantic" style={{ fontFamily: "var(--font-mono)", fontSize: 11 }}>
+                      {sym.category}: {sym.canonicalName}{sym.value !== undefined ? ` = ${String(sym.value)}` : ""} ({sym.dataType})
+                    </span>
                   ))}
                 </div>
               </div>
@@ -518,6 +697,25 @@ export function AnalyzerView({
               Engine-agnostic intermediate representation specifying retrieval operation, metadata filter dictionary, and dual query channels.
             </p>
           </div>
+
+          {trace.irPlan && (
+            <div
+              style={{
+                background: "var(--bg-code)",
+                padding: 16,
+                borderRadius: "var(--radius-md)",
+                border: "1px solid var(--border-subtle)",
+                marginBottom: 16,
+              }}
+            >
+              <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-faint)", textTransform: "uppercase", marginBottom: 6 }}>
+                Typed IR Operator Tree ({trace.irPlan.nodeCount} nodes, {trace.irPlan.edges.length} edges)
+              </div>
+              <pre style={{ fontSize: 12, fontFamily: "var(--font-mono)", color: "#a5b4fc", overflowX: "auto" }}>
+{formatIRPlan(trace.irPlan.root)}
+              </pre>
+            </div>
+          )}
 
           <div
             style={{
@@ -605,6 +803,68 @@ export function AnalyzerView({
               </div>
             </div>
           </div>
+
+          {trace.optimization && (
+            <div style={{ marginTop: 16, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10 }}>
+              <div style={{ background: "var(--bg-card-subtle)", padding: 10, borderRadius: 6 }}>
+                <div style={{ fontSize: 10.5, color: "var(--text-faint)", fontWeight: 700 }}>LEVEL</div>
+                <div style={{ fontSize: 14, fontWeight: 700, color: "var(--accent-text)" }}>-{trace.optimization.level}</div>
+              </div>
+              <div style={{ background: "var(--bg-card-subtle)", padding: 10, borderRadius: 6 }}>
+                <div style={{ fontSize: 10.5, color: "var(--text-faint)", fontWeight: 700 }}>EST. COST (BEFORE → AFTER)</div>
+                <div style={{ fontSize: 14, fontWeight: 700, color: "var(--success)" }}>
+                  {trace.optimization.costBefore.totalCost} → {trace.optimization.costAfter.totalCost}
+                </div>
+              </div>
+              <div style={{ background: "var(--bg-card-subtle)", padding: 10, borderRadius: 6 }}>
+                <div style={{ fontSize: 10.5, color: "var(--text-faint)", fontWeight: 700 }}>PASSES APPLIED</div>
+                <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-main)" }}>
+                  {trace.optimization.appliedPasses.join(", ") || "None (O0)"}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Tab 6: VM & Bytecode */}
+      {activeTab === "vm" && (
+        <div className="surface-card" role="tabpanel" id="panel-vm" aria-labelledby="tab-vm">
+          <div style={{ marginBottom: 14 }}>
+            <h3 style={{ fontSize: 14, fontWeight: 700, color: "var(--text-main)", marginBottom: 4 }}>
+              Query Bytecode &amp; Execution Plan
+            </h3>
+            <p style={{ fontSize: 12, color: "var(--text-muted)" }}>
+              Stack-oriented bytecode instructions compiled from the optimized IR DAG and dispatched to Supabase hybrid_search_rrf().
+            </p>
+          </div>
+
+          {trace.executionPlan ? (
+            <div className="table-scroll">
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, fontFamily: "var(--font-mono)", textAlign: "left" }}>
+                <thead>
+                  <tr style={{ borderBottom: "1px solid var(--border-subtle)", color: "var(--text-faint)" }}>
+                    <th style={{ padding: "6px 10px" }}>PC</th>
+                    <th style={{ padding: "6px 10px" }}>Opcode</th>
+                    <th style={{ padding: "6px 10px" }}>Operand</th>
+                    <th style={{ padding: "6px 10px" }}>Description</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {trace.executionPlan.bytecode.map((inst) => (
+                    <tr key={inst.pc} style={{ borderBottom: "1px solid var(--border-subtle)" }}>
+                      <td style={{ padding: "6px 10px", color: "var(--text-muted)" }}>{inst.pc.toString().padStart(2, "0")}</td>
+                      <td style={{ padding: "6px 10px", color: "var(--accent-text)", fontWeight: 700 }}>{inst.opcode}</td>
+                      <td style={{ padding: "6px 10px", color: "#34d399" }}>{inst.operand ?? "–"}</td>
+                      <td style={{ padding: "6px 10px", color: "var(--text-main)" }}>{inst.comment}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <p style={{ fontSize: 12.5, color: "var(--text-muted)" }}>No execution plan generated.</p>
+          )}
         </div>
       )}
       </>)}
